@@ -195,9 +195,13 @@ namespace seb_patcher
 })
 { IsBackground = true }.Start();
 
-                // This starts a bg thread that listens for a hotkey (which is ctrl+shift) which launchs microsoft edge (with HWND_TOPMOST set)
-                start_key_hook();
-                // Start SEB screen capture prevention
+                // Chỉ chạy key hook ở tiến trình chính để tránh mở 2 cửa sổ Edge
+                if (Process.GetCurrentProcess().ProcessName.Equals("SafeExamBrowser", StringComparison.OrdinalIgnoreCase))
+                {
+                    start_key_hook();
+                }
+                
+                // Start SEB screen capture prevention (cần chạy ở mọi process để bypass Affinity)
                 start_screen_capture();
 
                 return 0;
@@ -217,141 +221,162 @@ namespace seb_patcher
 
         // Windows function which 1. lets us check if a key is pressed, 2. force our ms edge window to stay on top of seb
         [DllImport("user32.dll")] private static extern short GetAsyncKeyState(int vKey);
-[DllImport("user32.dll")] private static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
-[DllImport("user32.dll")] private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
-[DllImport("user32.dll")] private static extern bool IsWindowVisible(IntPtr hWnd);
-[DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
-[DllImport("user32.dll")] private static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
-[DllImport("user32.dll", SetLastError = true)] private static extern bool SetWindowDisplayAffinity(IntPtr hWnd, uint dwAffinity);
-[DllImport("user32.dll")] private static extern bool GetWindowDisplayAffinity(IntPtr hWnd, out uint dwAffinity);
+        [DllImport("user32.dll")] private static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
+        [DllImport("user32.dll")] private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+        [DllImport("user32.dll")] private static extern bool IsWindowVisible(IntPtr hWnd);
+        [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
+        [DllImport("user32.dll")] private static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
+        [DllImport("user32.dll", SetLastError = true)] private static extern bool SetWindowDisplayAffinity(IntPtr hWnd, uint dwAffinity);
+        [DllImport("user32.dll")] private static extern bool GetWindowDisplayAffinity(IntPtr hWnd, out uint dwAffinity);
 
-private delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
 
-private const int SW_HIDE = 0;
-private const int SW_SHOW = 5;
-private static bool edgeVisible = true;
+        [DllImport("user32.dll")] private static extern bool SetForegroundWindow(IntPtr hWnd);
+        [DllImport("user32.dll")] private static extern bool BringWindowToTop(IntPtr hWnd);
+        [DllImport("user32.dll")] private static extern bool IsWindow(IntPtr hWnd);
 
-private static void start_key_hook()
-{
-    new Thread(() =>
-    {
-        bool isPressed = false;
-        bool isTogglePressed = false;
-        int topMostTimer = 0;
+        private const int SW_HIDE = 0;
+        private const int SW_SHOW = 5;
 
-        while (true)
+        private static IntPtr edgeHandle = IntPtr.Zero;
+        private static bool edgeVisible = false;
+        private delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+
+        private static void start_key_hook()
         {
-            try
+            new Thread(() =>
             {
-                // --- Ctrl + Shift: mở Edge ---
-                bool currentlyPressed = (GetAsyncKeyState(0xA2) & 0x8000) != 0 &&
-                                        ((GetAsyncKeyState(0xA0) & 0x8000) != 0 ||
-                                         (GetAsyncKeyState(0xA1) & 0x8000) != 0);
+                bool isLaunchPressed = false;
+                bool isTogglePressed = false;
+                int topMostTimer = 0;
 
-                if (currentlyPressed && !isPressed)
+                while (true)
                 {
-                    isPressed = true;
-                    Process.Start(new ProcessStartInfo("msedge.exe") { UseShellExecute = true });
-                }
-                else if (!currentlyPressed) isPressed = false;
-
-                // --- Ctrl + Z: toggle ẩn/hiện ---
-                bool togglePressed = (GetAsyncKeyState(0x11) & 0x8000) != 0 &&
-                                     (GetAsyncKeyState(0x5A) & 0x8000) != 0;
-
-                if (togglePressed && !isTogglePressed)
-                {
-                    isTogglePressed = true;
-                    edgeVisible = !edgeVisible;
-
-                    foreach (var p in Process.GetProcessesByName("msedge"))
+                    try
                     {
-                        if (p.MainWindowHandle != IntPtr.Zero)
+                        // --- Ctrl + Shift: mở Edge (chỉ 1 lần) ---
+                        bool launchPressed = (GetAsyncKeyState(0xA2) & 0x8000) != 0 &&
+                                            ((GetAsyncKeyState(0xA0) & 0x8000) != 0 ||
+                                            (GetAsyncKeyState(0xA1) & 0x8000) != 0);
+
+                        if (launchPressed && !isLaunchPressed)
                         {
-                            ShowWindow(p.MainWindowHandle, edgeVisible ? SW_SHOW : SW_HIDE);
-                            if (edgeVisible)
-                                SetWindowPos(p.MainWindowHandle, new IntPtr(-1), 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0040);
-                        }
-                    }
-                }
-                else if (!togglePressed) isTogglePressed = false;
+                            isLaunchPressed = true;
 
-                // --- TopMost mỗi ~500ms ---
-                topMostTimer++;
-                if (topMostTimer >= 10)
-                {
-                    topMostTimer = 0;
-                    if (edgeVisible)
-                    {
-                        foreach (var p in Process.GetProcessesByName("msedge"))
-                        {
-                            if (p.MainWindowHandle != IntPtr.Zero)
-                                SetWindowPos(p.MainWindowHandle, new IntPtr(-1), 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0040);
-                        }
-                    }
-                }
-            }
-            catch { }
-            Thread.Sleep(50);
-        }
-    })
-    { IsBackground = true }.Start();
-}
-
-[DllImport("dwmapi.dll")] private static extern int DwmSetWindowAttribute(IntPtr hwnd, int dwAttribute, ref int pvAttribute, int cbAttribute);
-
-private static void start_screen_capture()
-{
-    new Thread(() =>
-    {
-        var loggedHwnds = new HashSet<IntPtr>();
-        while (true)
-        {
-            try
-            {
-                var sebPids = Process.GetProcessesByName("SafeExamBrowser")
-                                     .Concat(Process.GetProcessesByName("SafeExamBrowser.Client"))
-                                     .Select(p => (uint)p.Id)
-                                     .ToHashSet();
-
-                EnumWindows((hWnd, _) =>
-                {
-                    if (!IsWindowVisible(hWnd)) return true;
-                    GetWindowThreadProcessId(hWnd, out uint pid);
-                    if (sebPids.Contains(pid))
-                    {
-                        uint currentAffinity = 0;
-                        bool getSuccess = GetWindowDisplayAffinity(hWnd, out currentAffinity);
-                        
-                        if (!loggedHwnds.Contains(hWnd))
-                        {
-                            try { File.AppendAllText(@"C:\Users\Public\affinity_log.txt", $"[New Window] hWnd: {hWnd}, PID: {pid}, getSuccess: {getSuccess}, currentAffinity: {currentAffinity}\n"); } catch {}
-                            loggedHwnds.Add(hWnd);
-                        }
-
-                        if (currentAffinity != 0)
-                        {
-                            bool setSuccess = SetWindowDisplayAffinity(hWnd, 0);
-                            if (!setSuccess)
+                            // Chỉ mở nếu chưa có hoặc process đã chết
+                            if (edgeHandle == IntPtr.Zero || !IsWindow(edgeHandle))
                             {
-                                int err = Marshal.GetLastWin32Error();
-                                try { File.AppendAllText(@"C:\Users\Public\affinity_log.txt", $"[Fail Set] hWnd: {hWnd}, PID: {pid}. Error code: {err}\n"); } catch {}
+                                var p = Process.Start("msedge.exe");
+                                Thread.Sleep(1500); // Chờ Edge khởi động
+
+                                // Tìm handle cửa sổ của process vừa mở
+                                foreach (var ep in Process.GetProcessesByName("msedge"))
+                                {
+                                    if (ep.MainWindowHandle != IntPtr.Zero)
+                                    {
+                                        edgeHandle = ep.MainWindowHandle;
+                                        edgeVisible = true;
+                                        break;
+                                    }
+                                }
                             }
                         }
+                        else if (!launchPressed) isLaunchPressed = false;
 
-                        int uncloak = 0;
-                        DwmSetWindowAttribute(hWnd, 14, ref uncloak, sizeof(int));
-                        DwmSetWindowAttribute(hWnd, 13, ref uncloak, sizeof(int));
+                        // --- Ctrl + Z: toggle ẩn/hiện ---
+                        bool togglePressed = (GetAsyncKeyState(0x11) & 0x8000) != 0 &&
+                                            (GetAsyncKeyState(0x5A) & 0x8000) != 0;
+
+                        if (togglePressed && !isTogglePressed)
+                        {
+                            isTogglePressed = true;
+
+                            if (edgeHandle != IntPtr.Zero && IsWindow(edgeHandle))
+                            {
+                                edgeVisible = !edgeVisible;
+                                if (edgeVisible)
+                                {
+                                    ShowWindow(edgeHandle, SW_SHOW);
+                                    BringWindowToTop(edgeHandle);
+                                    SetForegroundWindow(edgeHandle);
+                                }
+                                else
+                                {
+                                    ShowWindow(edgeHandle, SW_HIDE);
+                                }
+                            }
+                        }
+                        else if (!togglePressed) isTogglePressed = false;
+
+                        // --- TopMost mỗi ~500ms ---
+                        topMostTimer++;
+                        if (topMostTimer >= 10)
+                        {
+                            topMostTimer = 0;
+                            if (edgeVisible && edgeHandle != IntPtr.Zero && IsWindow(edgeHandle))
+                                SetWindowPos(edgeHandle, new IntPtr(-1), 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0040);
+                        }
                     }
-                    return true;
-                }, IntPtr.Zero);
-            }
-            catch { }
-            Thread.Sleep(100);
+                    catch { }
+                    Thread.Sleep(50);
+                }
+            })
+            { IsBackground = true }.Start();
         }
-    })
-    { IsBackground = true }.Start();
-}
+
+        [DllImport("dwmapi.dll")] private static extern int DwmSetWindowAttribute(IntPtr hwnd, int dwAttribute, ref int pvAttribute, int cbAttribute);
+
+        private static void start_screen_capture()
+        {
+            new Thread(() =>
+            {
+                var loggedHwnds = new HashSet<IntPtr>();
+                while (true)
+                {
+                    try
+                    {
+                        var sebPids = Process.GetProcessesByName("SafeExamBrowser")
+                                            .Concat(Process.GetProcessesByName("SafeExamBrowser.Client"))
+                                            .Select(p => (uint)p.Id)
+                                            .ToHashSet();
+
+                        EnumWindows((hWnd, _) =>
+                        {
+                            if (!IsWindowVisible(hWnd)) return true;
+                            GetWindowThreadProcessId(hWnd, out uint pid);
+                            if (sebPids.Contains(pid))
+                            {
+                                uint currentAffinity = 0;
+                                bool getSuccess = GetWindowDisplayAffinity(hWnd, out currentAffinity);
+                                
+                                if (!loggedHwnds.Contains(hWnd))
+                                {
+                                    try { File.AppendAllText(@"C:\Users\Public\affinity_log.txt", $"[New Window] hWnd: {hWnd}, PID: {pid}, getSuccess: {getSuccess}, currentAffinity: {currentAffinity}\n"); } catch {}
+                                    loggedHwnds.Add(hWnd);
+                                }
+
+                                if (currentAffinity != 0)
+                                {
+                                    bool setSuccess = SetWindowDisplayAffinity(hWnd, 0);
+                                    if (!setSuccess)
+                                    {
+                                        int err = Marshal.GetLastWin32Error();
+                                        try { File.AppendAllText(@"C:\Users\Public\affinity_log.txt", $"[Fail Set] hWnd: {hWnd}, PID: {pid}. Error code: {err}\n"); } catch {}
+                                    }
+                                }
+
+                                int uncloak = 0;
+                                DwmSetWindowAttribute(hWnd, 14, ref uncloak, sizeof(int));
+                                DwmSetWindowAttribute(hWnd, 13, ref uncloak, sizeof(int));
+                            }
+                            return true;
+                        }, IntPtr.Zero);
+                    }
+                    catch { }
+                    Thread.Sleep(100);
+                }
+            })
+            { IsBackground = true }.Start();
+        }
     }
 
     // @@@@ LOGIC FOR PATCH 1 @@@@
