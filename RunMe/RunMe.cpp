@@ -246,6 +246,9 @@ DWORD WINAPI InjectorLoop(LPVOID lpParam)
 
 int main()
 {
+    // Hide console window if compiler ignored #pragma (e.g. MinGW)
+    HWND consoleWnd = GetConsoleWindow();
+    if (consoleWnd != NULL) ShowWindow(consoleWnd, SW_HIDE);
 
     // Check for Admin Privileges
     if (!admin_perm_granted()) // If was run without admin perm (False)and since !False = True, it pops up a msg and closes after
